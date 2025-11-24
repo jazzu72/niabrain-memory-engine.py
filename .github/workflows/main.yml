@@ -1,0 +1,220 @@
+nia/scraper/
+├── __init__.py
+├── main.py
+├── utils.py
+├── sms_alert.py
+└── sources/
+    ├── __init__.py
+    ├── epic.py
+    ├── unity.py
+    ├── grants_gov.py
+    ├── nea.py
+    ├── sundance.py
+    ├── filmfreeway.py
+    ├── polygon.py
+    ├── ethereum_foundation.py
+    ├── nvidia_inception.py
+    └── microsoft_creator.py
+from .main import run_scraper_full    
+import asyncio
+from .utils import dedupe_and_rank, send_to_nia
+from .sources import (
+    epic, unity, grants_gov, nea, sundance,
+    filmfreeway, polygon, ethereum_foundation,
+    nvidia_inception, microsoft_creator
+)
+
+SOURCES = [
+    epic, unity, grants_gov, nea, sundance,
+    filmfreeway, polygon, ethereum_foundation,
+    nvidia_inception, microsoft_creator
+]
+
+async def run_scraper_full():
+    raw_opps = []
+    for source in SOURCES:
+        try:
+            raw_opps.extend(await source.run())
+        except Exception as e:
+            print(f"[!] {source.__name__} failed: {e}")
+
+    ranked = dedupe_and_rank(raw_opps)
+    import hashlib
+import sqlite3
+import os
+from datetime import datetime
+from typing import List, Dict, Any
+
+DB_PATH = os.getenv("SCRAPER_CACHE_DB", "scraper_cache.sqlite")
+
+def _conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+def ensure_db():
+    conn = _conn()
+    conn.execute("""CREATE TABLE IF NOT EXISTS seen (
+        id TEXT PRIMARY KEY,
+        inserted_at TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.commit()
+    conn.close()
+
+def compute_id(url: str, title: str) -> str:
+    return hashlib.sha256(f"{url}|{title}".encode()).hexdigest()[:16]
+
+def already_seen(uid: str) -> bool:
+    ensure_db()
+    conn = _conn()
+    cur = conn.execute("SELECT 1 FROM seen WHERE id = ?", (uid,))
+    exists = cur.fetchone() is not None
+    conn.close()
+    return exists
+
+def mark_seen(uid: str):
+    ensure_db()
+    conn = _conn()
+    conn.execute("INSERT OR IGNORE INTO seen (id) VALUES (?)", (uid,))
+    conn.commit()
+    conn.close()
+
+def normalize_raw(raw: Dict, source: str) -> Dict:
+    uid = compute_id(raw.get("url", ""), raw.get("title", ""))
+    return {
+        "id": uid,
+        "title": str(raw.get("title", "")).strip(),
+        "description": str(raw.get("description", "")),
+        "funding_min": raw.get("funding_min"),
+        "funding_max": raw.get("funding_max"),
+        "deadline": raw.get("deadline"),
+        "url": raw.get("url", "").strip(),
+        "tags": raw.get("tags", []),
+        "source": source,
+        "scraped_at": datetime.utcnow().isoformat(timespec='seconds') + "Z"
+    }
+
+KEYWORD_WEIGHTS = {
+    "jazz": 40, "music": 35, "film score": 45, "sync": 50, "soundtrack": 40,
+    "game audio": 45, "nft music": 40, "web3": 30, "ai music": 40,
+    "grant": 25, "fellowship": 30, "rolling": 35
+}
+
+def compute_fit_score(norm: Dict) -> int:
+    text = f"{norm['title']} {norm['description']} {' '.join(norm['tags'])}".lower()
+    score = sum(w for k, w in KEYWORD_WEIGHTS.items() if k in text)
+    if norm.get("deadline"):
+        try:
+            days = (datetime.fromisoformat(norm["deadline"][:10]) - datetime.utcnow()).days
+            if days < 7: score += 50
+            elif days < 30: score += 25
+        except: pass
+    norm["fit_score"] = min(100, score)
+    return norm["fit_score"]
+
+def dedupe_and_rank(raw_opps: List[Dict]) -> List[Dict]:
+    normalized = [normalize_raw(r, r.get("source", "unknown")) for r in raw_opps]
+    unique = []
+    for opp in normalized:
+        if not already_seen(opp["id"]):
+            compute_fit_score(opp)
+            unique.append(opp)
+            mark_seen(opp["id"])
+    return sorted(unique, key=lambda x: x["fit_score"], reverse=True)
+
+def send_to_nia(opportunities: List[Dict]):
+    if opportunities:
+        from .sms_alert import send_opportunity_alert
+        for opp in opportunities:
+            send_opportunity_alert(opp)
+
+ensure_db()  # initialize on import
+from twilio.rest import Client
+import os
+from datetime import datetime
+
+client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
+FROM = os.getenv("TWILIO_PHONE_NUMBER")
+TO = os.getenv("YOUR_CELL_NUMBER")
+
+def send_opportunity_alert(opp: dict):
+    amount = opp.get("funding_max") or "Unknown"
+    deadline = opp.get("deadline") or "Rolling"
+    message = f"""
+NIA FOUND MONEY ({opp['fit_score']}/100)
+
+{opp['title']}
+${amount:,} | Closes: {deadline}
+
+{opp['url']}
+
+Reply “APPLY” and I draft + submit in <30 min.
+— Nia
+""".strip()
+
+    client.messages.create(body=message, from_=FROM, to=TO)
+ 
+    print(f"[{datetime.now().strftime('%H:%M')}] SMS sent → {opp['title']}")
+    high_value = [o for o in ranked if o.get("fit_score", 0) >= 70]
+    send_to_nia(high_value)
+    print(f"Nia scraped {len(ranked)} opportunities — {len(high_value)} high-value sent via SMS")
+    return high_value
+    from .epic import run as epic
+from .unity import run as unity
+from .grants_gov import run as grants_gov
+from .nea import run as nea
+from .sundance import run as sundance
+from .filmfreeway import run as filmfreeway
+from .polygon import run as polygon
+from .ethereum_foundation import run as ethereum_foundation
+from .nvidia_inception import run as nvidia_inception
+from .microsoft_creator import run as microsoft_creator
+from playwright.async_api import async_playwright
+
+async def run():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto("https://www.unrealengine.com/en-US/megagrants")
+        await page.wait_for_timeout(5000)
+        await browser.close()
+        return [{
+            "title": "Epic MegaGrants 2025–2026",
+            "description": "Up to $500,000 for Unreal Engine projects. Rolling deadline.",
+            "funding_min": 5000,
+            "funding_max": 500000,
+            "deadline": None,
+            "url": "https://www.unrealengine.com/en-US/megagrants",
+            "tags": ["game", "unreal", "3d", "animation", "music for games"],
+            "source": "epic"
+        }] 
+      async def run():
+    return [
+        {
+            "title": "Unity for Humanity Grant 2026",
+            "description": "Funding + mentorship for impact-driven creators using Unity.",
+            "funding_max": 200000,
+            "deadline": "2026-04-30",
+            "url": "https://create.unity.com/unity-for-humanity",
+            "tags": ["game", "social impact", "education", "music in games"],
+            "source": "unity"
+        }
+    ] 
+    import httpx
+
+async def run():
+    async with httpx.AsyncClient() as client:
+        r = await client.get("https://www.grants.gov/grantsws/rest/opportunity/synopsis/search", params={"keywords": "music OR jazz OR arts"})
+        data = r.json().get("oppHits", [])
+        opps = []
+        for grant in data[:10]:
+            opps.append({
+                "title": grant.get("opportunityTitle", "Untitled"),
+                "description": grant.get("description", "")[:500],
+                "funding_max": grant.get("awardCeiling"),
+                "deadline": grant.get("closeDate"),
+                "url": f"https://www.grants.gov/search-results-detail/{grant['id']}",
+                "tags": ["federal", "arts", "music"],
+                "source": "grants_gov"
+            })
+        return opps
