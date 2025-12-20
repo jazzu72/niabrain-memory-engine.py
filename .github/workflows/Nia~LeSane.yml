@@ -1,0 +1,80 @@
+- name: Run AutoBuilder
+  shell: pwsh
+  run: |
+    # CRITICAL: Always set working directory to repo root
+    Set-Location $env:GITHUB_WORKSPACE
+    
+    # Verify we're in the right place
+    Write-Host "Current directory: $(Get-Location)"
+    Write-Host "Contents:" 
+    Get-ChildItem -Name
+    
+    # Now run your script with full explicit path
+    & "$env:GITHUB_WORKSPACE/scripts/Invoke-AutoBuild.ps1" -Goal "${{ inputs.goal }}"
+    - name: Run Nia AutoBuilder
+  shell: pwsh
+  env:
+    XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+    NIA_VAULT_MASTER_KEY: ${{ secrets.NIA_VAULT_MASTER_KEY }}
+  run: |
+    # Ensure we're in repo root
+    Set-Location $env:GITHUB_WORKSPACE
+    Write-Host "Working directory set to: $(Get-Location)"
+    
+    # Debug: List files to confirm structure
+    Get-ChildItem -Recurse -Name | Select-String "Invoke-AutoBuild.ps1|main.py|requirements.txt"
+    
+    # Run the script
+    & "$env:GITHUB_WORKSPACE/scripts/Invoke-AutoBuild.ps1" -Goal "${{ inputs.goal }}"
+    # .github/workflows/nia-autobuild.yml
+name: Nia AutoBuild
+
+on:
+  workflow_dispatch:
+    inputs:
+      goal:
+        description: "What should Nia build or do?"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build:
+    runs-on: windows-latest   # Best for PowerShell
+    env:
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      NIA_VAULT_MASTER_KEY: ${{ secrets.NIA_VAULT_MASTER_KEY }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set Working Directory (Critical Fix)
+        shell: pwsh
+        run: |
+          Set-Location $env:GITHUB_WORKSPACE
+          Write-Host "Working from: $(Get-Location)"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Nia AutoBuilder
+        shell: pwsh
+        run: |
+          Set-Location $env:GITHUB_WORKSPACE
+          & "$env:GITHUB_WORKSPACE/scripts/Invoke-AutoBuild.ps1" -Goal "${{ inputs.goal }}"
+
+      - name: Create Pull Request
+        if: success()
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.NIA_GITHUB_TOKEN }}
+          branch: nia/autobuild-${{ github.run_id }}
+          title: "🧠 Nia: ${{ inputs.goal }}"
+          body: "Autonomous evolution in progress"
