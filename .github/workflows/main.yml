@@ -29,13 +29,14 @@ SOURCES = [
     filmfreeway, polygon, ethereum_foundation,
     nvidia_inception, microsoft_creator
 ]
-
 async def run_scraper_full():
     raw_opps = []
     for source in SOURCES:
         try:
             raw_opps.extend(await source.run())
         except Exception as e:
+            print(f"Source failed: {source} → {e}")
+    return raw_opps
             print(f"[!] {source.__name__} failed: {e}")
 
     ranked = dedupe_and_rank(raw_opps)
