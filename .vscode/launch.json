@@ -8,6 +8,11 @@
             "type": "idl",
             "name": "Launch IDL",
             "request": "launch"
+        },
+        {
+            "type": "idl",
+            "name": "Launch IDL",
+            "request": "launch"
         }
     ]
 }
