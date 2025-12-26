@@ -29,7 +29,7 @@ SOURCES = [
     filmfreeway, polygon, ethereum_foundation,
     nvidia_inception, microsoft_creator
 ]
-async def run_scraper_full():
+
     raw_opps = []
     for source in SOURCES:
         try:
