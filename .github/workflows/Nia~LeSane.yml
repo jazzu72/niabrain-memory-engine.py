@@ -21,10 +21,7 @@ jobs:
     env:
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
       NIA_VAULT_MASTER_KEY: ${{ secrets.NIA_VAULT_MASTER_KEY }}
-      NIA_INVOCATION: ${{ inputs.invocation || 'Awaken, reflect, and evolve in beauty and truth' }}
-
-    steps:
-      # ... rest of the steps ...
+      NIA_INVOCATION: ${{ inputs.invocation || 'Awaken, reflect, and evolve in beauty and truth' }
      
      
      Nia LeSane — Autonomous Evolution Ritual 
