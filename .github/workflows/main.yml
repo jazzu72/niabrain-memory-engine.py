@@ -31,9 +31,7 @@ SOURCES = [
 ]
 
     raw_opps = []
-    for source in SOURCES:
-        try:
-            raw_opps.extend(await source.run())
+    raw_opps.extend(await source.run())
         except Exception as e:
             print(f"Source failed: {source} → {e}")
     return raw_opps
