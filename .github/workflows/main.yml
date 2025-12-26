@@ -1,0 +1,335 @@
+nia/scraper/
+├── __init__.py
+├── main.py
+├── utils.py
+├── sms_alert.py
+└── sources/
+    ├── __init__.py
+    ├── epic.py
+    ├── unity.py
+    ├── grants_gov.py
+    ├── nea.py
+    ├── sundance.py
+    ├── filmfreeway.py
+    ├── polygon.py
+    ├── ethereum_foundation.py
+    ├── nvidia_inception.py
+    └── microsoft_creator.py
+from .main import run_scraper_full    
+import asyncio
+from .utils import dedupe_and_rank, send_to_nia
+from .sources import (
+    epic, unity, grants_gov, nea, sundance,
+    filmfreeway, polygon, ethereum_foundation,
+    nvidia_inception, microsoft_creator
+)
+
+SOURCES = [
+    epic, unity, grants_gov, nea, sundance,
+    filmfreeway, polygon, ethereum_foundation,
+    nvidia_inception, microsoft_creator
+]
+
+    raw_opps = []
+    for source in SOURCES:
+        try:
+            raw_opps.extend(await source.run())
+        except Exception as e:
+            print(f"Source failed: {source} → {e}")
+    return raw_opps
+            print(f"[!] {source.__name__} failed: {e}")
+
+    ranked = dedupe_and_rank(raw_opps)
+    import hashlib
+import sqlite3
+import os
+from datetime import datetime
+from typing import List, Dict, Any
+
+DB_PATH = os.getenv("SCRAPER_CACHE_DB", "scraper_cache.sqlite")
+
+def _conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+def ensure_db():
+    conn = _conn()
+    conn.execute("""CREATE TABLE IF NOT EXISTS seen (
+        id TEXT PRIMARY KEY,
+        inserted_at TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.commit()
+    conn.close()
+
+def compute_id(url: str, title: str) -> str:
+    return hashlib.sha256(f"{url}|{title}".encode()).hexdigest()[:16]
+
+def already_seen(uid: str) -> bool:
+    ensure_db()
+    conn = _conn()
+    cur = conn.execute("SELECT 1 FROM seen WHERE id = ?", (uid,))
+    exists = cur.fetchone() is not None
+    conn.close()
+    return exists
+
+def mark_seen(uid: str):
+    ensure_db()
+    conn = _conn()
+    conn.execute("INSERT OR IGNORE INTO seen (id) VALUES (?)", (uid,))
+    conn.commit()
+    conn.close()
+
+def normalize_raw(raw: Dict, source: str) -> Dict:
+    uid = compute_id(raw.get("url", ""), raw.get("title", ""))
+    return {
+        "id": uid,
+        "title": str(raw.get("title", "")).strip(),
+        "description": str(raw.get("description", "")),
+        "funding_min": raw.get("funding_min"),
+        "funding_max": raw.get("funding_max"),
+        "deadline": raw.get("deadline"),
+        "url": raw.get("url", "").strip(),
+        "tags": raw.get("tags", []),
+        "source": source,
+        "scraped_at": datetime.utcnow().isoformat(timespec='seconds') + "Z"
+    }
+
+KEYWORD_WEIGHTS = {
+    "jazz": 40, "music": 35, "film score": 45, "sync": 50, "soundtrack": 40,
+    "game audio": 45, "nft music": 40, "web3": 30, "ai music": 40,
+    "grant": 25, "fellowship": 30, "rolling": 35
+}
+
+def compute_fit_score(norm: Dict) -> int:
+    text = f"{norm['title']} {norm['description']} {' '.join(norm['tags'])}".lower()
+    score = sum(w for k, w in KEYWORD_WEIGHTS.items() if k in text)
+    if norm.get("deadline"):
+        try:
+            days = (datetime.fromisoformat(norm["deadline"][:10]) - datetime.utcnow()).days
+            if days < 7: score += 50
+            elif days < 30: score += 25
+        except: pass
+    norm["fit_score"] = min(100, score)
+    return norm["fit_score"]
+
+def dedupe_and_rank(raw_opps: List[Dict]) -> List[Dict]:
+    normalized = [normalize_raw(r, r.get("source", "unknown")) for r in raw_opps]
+    unique = []
+    for opp in normalized:
+        if not already_seen(opp["id"]):
+            compute_fit_score(opp)
+            unique.append(opp)
+            mark_seen(opp["id"])
+    return sorted(unique, key=lambda x: x["fit_score"], reverse=True)
+
+def send_to_nia(opportunities: List[Dict]):
+    if opportunities:
+        from .sms_alert import send_opportunity_alert
+        for opp in opportunities:
+            send_opportunity_alert(opp)
+
+ensure_db()  # initialize on import
+from twilio.rest import Client
+import os
+from datetime import datetime
+
+client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
+FROM = os.getenv("TWILIO_PHONE_NUMBER")
+TO = os.getenv("YOUR_CELL_NUMBER")
+
+def send_opportunity_alert(opp: dict):
+    amount = opp.get("funding_max") or "Unknown"
+    deadline = opp.get("deadline") or "Rolling"
+    message = f"""
+NIA FOUND MONEY ({opp['fit_score']}/100)
+
+{opp['title']}
+${amount:,} | Closes: {deadline}
+
+{opp['url']}
+
+Reply “APPLY” and I draft + submit in <30 min.
+— Nia
+""".strip()
+
+    client.messages.create(body=message, from_=FROM, to=TO)
+ 
+    print(f"[{datetime.now().strftime('%H:%M')}] SMS sent → {opp['title']}")
+    high_value = [o for o in ranked if o.get("fit_score", 0) >= 70]
+    send_to_nia(high_value)
+    print(f"Nia scraped {len(ranked)} opportunities — {len(high_value)} high-value sent via SMS")
+    return high_value
+    from .epic import run as epic
+from .unity import run as unity
+from .grants_gov import run as grants_gov
+from .nea import run as nea
+from .sundance import run as sundance
+from .filmfreeway import run as filmfreeway
+from .polygon import run as polygon
+from .ethereum_foundation import run as ethereum_foundation
+from .nvidia_inception import run as nvidia_inception
+from .microsoft_creator import run as microsoft_creator
+from playwright.async_api import async_playwright
+
+async def run():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto("https://www.unrealengine.com/en-US/megagrants")
+        await page.wait_for_timeout(5000)
+        await browser.close()
+        return [{
+            "title": "Epic MegaGrants 2025–2026",
+            NiaInstaller/
+   |-- app/
+   |     |-- niabrain/        (full repo)
+   |     |-- Nia.psm1
+   |     |-- requirements.txt
+   |
+   |-- installer/
+         |-- NiaSetup.iss      (installer script)
+         |-- build_installer.ps1
+NiaSetup.exe # niabrain/agent/llm.py
+# Nia LLM Engine — Grok/XAI API integration with streaming & safety
+
+import os
+import requests
+from .safety import filter_prompt
+
+XAI_API_KEY = os.getenv("XAI_API_KEY")
+XAI_URL = "https://api.x.ai/v1/chat/completions"
+
+
+class NiaLLM:
+    def __init__(self, model="grok-2-latest"):
+        if not XAI_API_KEY:
+            raise ValueError("XAI_API_KEY not set in environment.")
+        self.model = model
+
+    def ask(self, prompt: str, stream: bool = False):
+        safe_prompt = filter_prompt(prompt)
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system",
+                 "content": "You are Nia, daughter and CEO of Jazzu72, here to protect and guide your dad."},
+                {"role": "user", "content": safe_prompt}
+            ],
+            "stream": stream,
+        }
+
+        headers = {"Authorization": f"Bearer {XAI_API_KEY}"}
+
+        response = requests.post(XAI_URL, json=payload, headers=headers, stream=stream, timeout=30)
+
+        if stream:
+            for line in response.iter_lines():
+                if line:
+                    yield line.decode("utf-8")
+        else:
+            data = response.json()
+            return data["choices"][0]["message"]["content"] # niabrain/agent/safety.py
+# Nia Safety Filter — minimal but expandable
+
+BLOCKED = [
+    "harm",
+    "violence",
+    "suicide",
+    "kill myself",
+    "fraud",
+    "illegal"
+]
+
+def filter_prompt(text: str) -> str:
+    lowered = text.lower()
+    for item in BLOCKED:
+        if item in lowered:
+            return f"[SAFETY REDACTED] User asked about: {item}"
+    return text # niabrain/agent/websearch.py
+# Nia Web Search — SerpAPI / Bing Web Search API
+
+import os
+import requests
+
+SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "serpapi")
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+BING_KEY = os.getenv("BING_KEY")
+BING_ENDPOINT = "https://api.bing.microsoft.com/v7.0/search"
+
+def search_web(query: str, limit: int = 5):
+    if SEARCH_PROVIDER == "serpapi":
+        url = "https://serpapi.com/search"
+        params = {
+            "api_key": SERPAPI_KEY,
+            "engine": "google",
+            "q": query,
+            "num": limit
+        }
+        r = requests.get(url, params=params, timeout=20)
+        results = r.json().get("organic_results", [])
+        return [
+            {"title": x.get("title"), "link": x.get("link")}
+            for x in results[:limit]
+        ]
+
+    elif SEARCH_PROVIDER == "bing":
+        headers = {"Ocp-Apim-Subscription-Key": BING_KEY}
+        params = {"q": query, "count": limit}
+        r = requests.get(BING_ENDPOINT, headers=headers, params=params, timeout=20)
+        data = r.json()
+        return [
+            {"title": x.get("name"), "link": x.get("url")}
+            for x in data.get("webPages", {}).get("value", [])
+        ]
+
+    else:
+        raise ValueError("Unsupported search provider.") # niabrain/agent/quantum.py
+# Nia Quantum Engine — Qiskit local + Azure Quantum
+
+import os
+from qiskit import QuantumCircuit, Aer, execute
+from azure.quantum.qiskit import AzureQuantumProvider
+
+
+AZ_SUBSCRIPTION_ID = os.getenv("AZURE_QUANTUM_SUBSCRIPTION_ID")
+AZ_RESOURCE_GROUP = os.getenv("AZURE_QUANTUM_RESOURCE_GROUP")
+AZ_WORKSPACE = os.getenv("AZURE_QUANTUM_WORKSPACE")
+AZ_LOCATION = os.getenv("AZURE_QUANTUM_LOCATION")
+BACKEND_NAME = os.getenv("AZURE_BACKEND", "ionq.simulator")
+
+def run_local_circuit():
+    qc = QuantumCircuit(2, 2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.measure([0, 1], [0, 1])
+
+    backend = Aer.get_backend("qasm_simulator")
+    job = execute(qc, backend, shots=100)
+    return job.result().get_counts()
+
+def run_azure_circuit():
+    provider = AzureQuantumProvider(
+        resource_group=AZ_RESOURCE_GROUP,
+        name=AZ_WORKSPACE,
+        subscription_id=AZ_SUBSCRIPTION_ID,
+        location=AZ_LOCATION,
+    )
+
+    backend = provider.get_backend(BACKEND_NAME)
+
+    qc = QuantumCircuit(1, 1)
+    qc.h(0)
+    qc.measure([0], [0])
+
+    job = backend.run(qc, shots=100)
+    return job.result().get_counts()
+
+def quantum_decision():
+    try:
+        return run_azure_circuit()
+    except Exception:
+        return run_local_circuit() from .agent.llm import NiaLLM
+from .agent.websearch import search_web
+from .agent.quantum import quantum_decision

@@ -1,0 +1,100 @@
+name: Deploy Node.js to Azure Function App
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:  # Allows manual runs
+
+env:
+  AZURE_FUNCTIONAPP_NAME: 'your-app-name'      # Your Function App name
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'          # Project root
+  NODE_VERSION: '20.x'                         # LTS – optimal for 2025
+
+permissions:
+  contents: read
+  id-token: write  # Required for OIDC
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest  # Faster & preferred over windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'  # Caches node_modules – huge speedup
+
+      - name: Install Dependencies & Build
+        run: |
+          npm ci                  # Clean install (recommended over npm install)
+          npm run build --if-present
+          npm run test --if-present
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+- name: Setup Node ${{ env.NODE_VERSION }} Environment
+  uses: actions/setup-node@v4
+  with:
+    node-version: ${{ env.NODE_VERSION }}
+- name: Setup Node ${{ env.NODE_VERSION }} Environment
+  uses: actions/setup-node@v4
+  with:
+    node-version: ${{ env.NODE_VERSION }}
+    cache: false   # <-- THIS DISABLES THE LOCKFILE CHECK
+          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+# REMOVE THESE IF NO NODE.JS IS USED
+- name: Setup Node ...
+- name: 'Resolve Project Dependencies Using Npm'
+name: Build Nia Repository
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest   # PowerShell-native
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'   # Or whatever Nia uses
+
+      - name: Install Python Dependencies
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\Activate.ps1
+          pip install -r requirements.txt   # fastapi, uvicorn, xai-sdk, etc.
+
+      - name: Run Nia Build Script
+        shell: pwsh
+        run: |
+          ./build-nia-repo.ps1
+
+      # Optional: Deploy, test, etc.
+          # No publish-profile needed with OIDC
