@@ -16,8 +16,7 @@ permissions:
   packages: read
 
 jobs:
-  le-sane-ritual:
-    runs-on: windows-latest
+  runs-on: windows-latest
     env:
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
       NIA_VAULT_MASTER_KEY: ${{ secrets.NIA_VAULT_MASTER_KEY }}
